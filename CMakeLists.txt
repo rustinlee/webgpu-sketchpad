@@ -4,7 +4,26 @@ project(
     LANGUAGES CXX C
 )
 
-add_executable(webgpu_sketchpad main.cpp)
+add_compile_definitions(_GLFW_WAYLAND)
+
+if (NOT EMSCRIPTEN)
+    add_subdirectory(glfw)
+else()
+    # Emscripten has built-in support for GLFW but requires the `-sUSE_GLFW=3` link option:
+    add_library(glfw INTERFACE)
+    target_link_options(glfw INTERFACE -sUSE_GLFW=3)
+endif()
+
+add_subdirectory(webgpu)
+add_subdirectory(glfw3webgpu)
+
+add_executable(webgpu_sketchpad
+    main.cpp
+)
+
+target_link_libraries(webgpu_sketchpad PRIVATE glfw webgpu glfw3webgpu)
+
+target_copy_webgpu_binaries(webgpu_sketchpad)
 
 set_target_properties(webgpu_sketchpad PROPERTIES
     CXX_STANDARD 17
@@ -27,9 +46,6 @@ if (XCODE)
 endif()
 
 if (EMSCRIPTEN)
+    set_target_properties(webgpu_sketchpad PROPERTIES SUFFIX ".html")
     target_link_options(webgpu_sketchpad PRIVATE -sASYNCIFY)
 endif()
-
-add_subdirectory(webgpu)
-target_link_libraries(webgpu_sketchpad PRIVATE webgpu)
-target_copy_webgpu_binaries(webgpu_sketchpad)
