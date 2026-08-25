@@ -1,7 +1,11 @@
 #include <cassert>
 #include <iostream>
 #include <vector>
+#include <array>
 #include <webgpu/webgpu.h>
+#ifdef WEBGPU_BACKEND_WGPU
+#include <webgpu/wgpu.h>
+#endif // WEBGPU_BACKEND_WGPU
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -46,7 +50,7 @@ WGPUDevice requestDeviceSync(WGPUAdapter adapter, WGPUDeviceDescriptor const *de
 	};
 	UserData userData;
 
-	auto onDeviceRequestEnded = [](
+	auto onDeviceRequestCompleted = [](
 		WGPURequestDeviceStatus status, WGPUDevice device, const char *message, void *pUserData
 	) {
 		UserData& userData = *static_cast<UserData*>(pUserData);
@@ -61,7 +65,7 @@ WGPUDevice requestDeviceSync(WGPUAdapter adapter, WGPUDeviceDescriptor const *de
 	wgpuAdapterRequestDevice(
 		adapter,
 		descriptor,
-		onDeviceRequestEnded,
+		onDeviceRequestCompleted,
 		(void*)&userData
 	);
 
@@ -179,6 +183,55 @@ int main() {
 	std::cout << "Got device: " << device << std::endl;
 	inspectDevice(device);
 
+	WGPUQueue queue = wgpuDeviceGetQueue(device);
+
+	auto onQueueWorkDone = [](WGPUQueueWorkDoneStatus status, void* /* pUserData */) {
+		std::cout << "Queued work finished with status: " << status << std::endl;
+	};
+	wgpuQueueOnSubmittedWorkDone(queue, onQueueWorkDone, nullptr /* pUserData */);
+
+	WGPUCommandEncoderDescriptor encoderDesc = {};
+	encoderDesc.nextInChain = nullptr;
+	encoderDesc.label = "Default Command Encoder";
+	WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, &encoderDesc);
+
+	wgpuCommandEncoderInsertDebugMarker(encoder, "debug marker 1");
+	wgpuCommandEncoderInsertDebugMarker(encoder, "debug marker 2");
+
+	WGPUCommandBufferDescriptor cmdBufferDesc = {};
+	cmdBufferDesc.nextInChain = nullptr;
+	cmdBufferDesc.label = "Debug Command Buffer";
+	WGPUCommandBuffer command = wgpuCommandEncoderFinish(encoder, &cmdBufferDesc);
+	wgpuCommandEncoderRelease(encoder);
+
+	std::cout << "Submitting command..." << std::endl;
+	wgpuQueueSubmit(queue, 1, &command);
+	wgpuCommandBufferRelease(command);
+	std::cout << "Command submitted." << std::endl;
+
+	for (int i = 0 ; i < 5 ; ++i) {
+		std::cout << "Tick/Poll device..." << std::endl;
+#if defined(WEBGPU_BACKEND_DAWN)
+		wgpuDeviceTick(device);
+#elif defined(WEBGPU_BACKEND_WGPU)
+		wgpuDevicePoll(device, false, nullptr);
+#elif defined(WEBGPU_BACKEND_EMSCRIPTEN)
+		emscripten_sleep(100);
+#endif
+	}
+
+	/*
+	std::array<WGPUCommandBuffer, 3> commands;
+	commands[0] = ;
+	commands[1] = ;
+	commands[2] = ;
+	wgpuQueueSubmit(queue, commands.size(), commands.data());
+	for (auto cmd : commands) {
+		wgpuCommandBufferRelease(cmd);
+	}
+	*/
+
+	wgpuQueueRelease(queue);
 	wgpuDeviceRelease(device);
 	return 0;
 }
