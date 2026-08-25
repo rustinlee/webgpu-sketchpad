@@ -26,6 +26,10 @@ if (XCODE)
     )
 endif()
 
+if (EMSCRIPTEN)
+    target_link_options(webgpu_sketchpad PRIVATE -sASYNCIFY)
+endif()
+
 add_subdirectory(webgpu)
 target_link_libraries(webgpu_sketchpad PRIVATE webgpu)
 target_copy_webgpu_binaries(webgpu_sketchpad)
