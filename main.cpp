@@ -37,9 +37,22 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	return out;
 }
 
+// from https://iquilezles.org/articles/checkerfiltering/
+fn checker(a : vec2f) -> f32 {
+	//return a.x;
+
+	var q : vec2f = vec2f(floor(a.x), floor(a.y));
+	return (q.x + q.y) % 2.0;
+
+	//var s : vec2f = vec2f(sign(fract(a * .5) - .5));
+	//return .5 - .5 * s.x * s.y;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    return vec4f(in.texCoord.x, in.texCoord.y, 0.5 + sin(uTime) * 0.5, 1.0);
+	var checkerVal : f32 = checker(in.texCoord * 20.0);
+	return vec4f(checkerVal, checkerVal, checkerVal, 1.0);
+    //return vec4f(in.texCoord.x, in.texCoord.y, 0.5 + sin(uTime) * 0.5, 1.0);
 }
 )";
 
@@ -222,8 +235,8 @@ void Application::InitializeBuffers() {
 	// Vertex buffer
 	std::vector<float> vertexData = {
 		-1.0, -1.0, 0.0, 0.0,
-		+3.0, -1.0, 1.0, 0.0,
-		-1.0, +3.0, 1.0, 1.0,
+		+3.0, -1.0, 3.0, 0.0,
+		-1.0, +3.0, 0.0, 3.0,
 	};
 	vertexCount = static_cast<uint32_t>(vertexData.size() / 4);
 
@@ -254,7 +267,7 @@ bool Application::Initialize() {
 	//glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-	window = glfwCreateWindow(640, 480, "WebGPU Sketchpad", nullptr, nullptr);
+	window = glfwCreateWindow(512, 512, "WebGPU Sketchpad", nullptr, nullptr);
 
 	if (!window) {
 		std::cerr << "Could not open GLFW window!" << std::endl;
