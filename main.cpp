@@ -126,7 +126,34 @@ private:
 	WGPUSurface surface;
 	WGPUDevice device;
 	WGPUQueue queue;
+	std::pair<WGPUSurfaceTexture, WGPUTextureView> GetNextSurfaceViewData();
 };
+
+std::pair<WGPUSurfaceTexture, WGPUTextureView> Application::GetNextSurfaceViewData() {
+	WGPUSurfaceTexture surfaceTexture;
+	wgpuSurfaceGetCurrentTexture(surface, &surfaceTexture);
+	if (surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_Success) {
+		return { surfaceTexture, nullptr };
+	}
+
+	WGPUTextureViewDescriptor viewDescriptor;
+	viewDescriptor.nextInChain = nullptr;
+	viewDescriptor.label = "Surface Texture View";
+	viewDescriptor.format = wgpuTextureGetFormat(surfaceTexture.texture);
+	viewDescriptor.dimension = WGPUTextureViewDimension_2D;
+	viewDescriptor.baseMipLevel = 0;
+	viewDescriptor.mipLevelCount = 1;
+	viewDescriptor.baseArrayLayer = 0;
+	viewDescriptor.arrayLayerCount = 1;
+	viewDescriptor.aspect = WGPUTextureAspect_All;
+	WGPUTextureView targetView = wgpuTextureCreateView(surfaceTexture.texture, &viewDescriptor);
+
+#ifndef WEBGPU_BACKEND_WGPU
+	wgpuTextureRelease(surfaceTexture.texture);
+#endif
+
+	return { surfaceTexture, targetView };
+}
 
 bool Application::Initialize() {
 	if (!glfwInit()) {
@@ -165,16 +192,13 @@ bool Application::Initialize() {
 
 	std::cout << "Requesting adapter..." << std::endl;
 	surface = glfwGetWGPUSurface(instance, window);
-	std::cout << "Acquired surface: " << surface << std::endl;
-
+	std::cout << "Got surface: " << surface << std::endl;
 	WGPURequestAdapterOptions adapterOptions = {};
 	adapterOptions.nextInChain = nullptr;
 	adapterOptions.compatibleSurface = surface;
-
 	WGPUAdapter adapter = requestAdapterSync(instance, &adapterOptions);
-	wgpuInstanceRelease(instance);
-
 	std::cout << "Got adapter: " << adapter << std::endl;
+	wgpuInstanceRelease(instance);
 
 #ifndef __EMSCRIPTEN__
 	WGPUSupportedLimits supportedLimits = {};
@@ -213,36 +237,80 @@ bool Application::Initialize() {
 	};
 
 	device = requestDeviceSync(adapter, &deviceDesc);
-	wgpuAdapterRelease(adapter);
 
 	std::cout << "Got device: " << device << std::endl;
 	inspectDevice(device);
 
 	queue = wgpuDeviceGetQueue(device);
 
-	auto onQueueWorkDone = [](WGPUQueueWorkDoneStatus status, void* /* pUserData */) {
-		std::cout << "Queued work finished with status: " << status << std::endl;
-	};
-	wgpuQueueOnSubmittedWorkDone(queue, onQueueWorkDone, nullptr /* pUserData */);
+	// Configure surface
+	WGPUSurfaceConfiguration surfaceConfig = {};
+	surfaceConfig.nextInChain = nullptr;
+	surfaceConfig.width = 640;
+	surfaceConfig.height = 480;
+	WGPUTextureFormat surfaceFormat = wgpuSurfaceGetPreferredFormat(surface, adapter);
+	surfaceConfig.format = surfaceFormat;
+	surfaceConfig.viewFormatCount = 0;
+	surfaceConfig.viewFormats = nullptr;
+	surfaceConfig.usage = WGPUTextureUsage_RenderAttachment;
+	surfaceConfig.device = device;
+	surfaceConfig.presentMode = WGPUPresentMode_Fifo;
+	surfaceConfig.alphaMode = WGPUCompositeAlphaMode_Auto;
+	wgpuSurfaceConfigure(surface, &surfaceConfig);
+
+	wgpuAdapterRelease(adapter);
+
+	return true;
+}
+
+void Application::Terminate() {
+	glfwDestroyWindow(window);
+	glfwTerminate();
+	wgpuSurfaceUnconfigure(surface);
+	wgpuSurfaceRelease(surface);
+	wgpuQueueRelease(queue);
+	wgpuDeviceRelease(device);
+}
+
+void Application::MainLoop() {
+	glfwPollEvents();
+
+	auto [surfaceTexture, targetView] = GetNextSurfaceViewData();
+	if (!targetView) return;
 
 	WGPUCommandEncoderDescriptor encoderDesc = {};
 	encoderDesc.nextInChain = nullptr;
 	encoderDesc.label = "Default Command Encoder";
 	WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, &encoderDesc);
 
-	wgpuCommandEncoderInsertDebugMarker(encoder, "debug marker 1");
-	wgpuCommandEncoderInsertDebugMarker(encoder, "debug marker 2");
+	WGPURenderPassDescriptor renderPassDesc = {};
+	renderPassDesc.nextInChain = nullptr;
 
+	WGPURenderPassColorAttachment renderPassColorAttachment = {};
+	renderPassColorAttachment.view = targetView;
+	renderPassColorAttachment.resolveTarget = nullptr;
+	renderPassColorAttachment.loadOp = WGPULoadOp_Clear;
+	renderPassColorAttachment.storeOp = WGPUStoreOp_Store;
+	renderPassColorAttachment.clearValue = WGPUColor { 0.5, 0.2, 0.2, 1.0 };
+#ifndef WEBGPU_BACKEND_WGPU
+	renderPassColorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+#endif
+	renderPassDesc.depthStencilAttachment = nullptr;
+	renderPassDesc.timestampWrites = nullptr;
+	renderPassDesc.colorAttachmentCount = 1;
+	renderPassDesc.colorAttachments = &renderPassColorAttachment;
+
+	// Create the render pass, just a screen clear with no draw commands currently
+	WGPURenderPassEncoder renderPass = wgpuCommandEncoderBeginRenderPass(encoder, &renderPassDesc);
+	wgpuRenderPassEncoderEnd(renderPass);
+	wgpuRenderPassEncoderRelease(renderPass);
+
+	// Encode and submit render pass
 	WGPUCommandBufferDescriptor cmdBufferDesc = {};
 	cmdBufferDesc.nextInChain = nullptr;
-	cmdBufferDesc.label = "Debug Command Buffer";
+	cmdBufferDesc.label = "Command Buffer";
 	WGPUCommandBuffer command = wgpuCommandEncoderFinish(encoder, &cmdBufferDesc);
 	wgpuCommandEncoderRelease(encoder);
-
-	std::cout << "Submitting command..." << std::endl;
-	wgpuQueueSubmit(queue, 1, &command);
-	wgpuCommandBufferRelease(command);
-	std::cout << "Command submitted." << std::endl;
 
 	/*
 	std::array<WGPUCommandBuffer, 3> commands;
@@ -255,21 +323,16 @@ bool Application::Initialize() {
 	}
 	*/
 
-	return true;
-}
+	//std::cout << "Submitting command..." << std::endl;
+	wgpuQueueSubmit(queue, 1, &command);
+	wgpuCommandBufferRelease(command);
+	//std::cout << "Command submitted." << std::endl;
 
-void Application::Terminate() {
-	glfwDestroyWindow(window);
-	glfwTerminate();
-	wgpuSurfaceRelease(surface);
-	wgpuQueueRelease(queue);
-	wgpuDeviceRelease(device);
-}
+	wgpuTextureViewRelease(targetView);
+#ifndef __EMSCRIPTEN__
+	wgpuSurfacePresent(surface);
+#endif
 
-void Application::MainLoop() {
-	glfwPollEvents();
-
-	//std::cout << "Tick/Poll device " << device << std::endl;
 #if defined(WEBGPU_BACKEND_DAWN)
 	wgpuDeviceTick(device);
 #elif defined(WEBGPU_BACKEND_WGPU)
