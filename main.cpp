@@ -18,16 +18,8 @@ using namespace wgpu;
 
 const char* triangleShaderSource = R"(
 @vertex
-fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) vec4f {
-    var p = vec2f(0.0, 0.0);
-    if (in_vertex_index == 0u) {
-        p = vec2f(-0.5, -0.5);
-    } else if (in_vertex_index == 1u) {
-        p = vec2f(0.5, -0.5);
-    } else {
-        p = vec2f(0.0, 0.5);
-    }
-    return vec4f(p, 0.0, 1.0);
+fn vs_main(@location(0) in_vertex_position: vec2f) -> @builtin(position) vec4f {
+	return vec4f(in_vertex_position, 0.0, 1.0);
 }
 
 @fragment
@@ -141,19 +133,24 @@ void inspectDevice(WGPUDevice device) {
 class Application {
 public:
 	bool Initialize();
-	void InitializePipeline();
 	void Terminate();
 	void MainLoop();
 	bool IsRunning();
 
 private:
+	void InitializePipeline();
+	void InitializeBuffers();
+	std::pair<WGPUSurfaceTexture, WGPUTextureView> GetNextSurfaceViewData();
+	RequiredLimits GetRequiredLimits(Adapter adapter) const;
+
 	GLFWwindow *window;
 	WGPUSurface surface;
 	Device device;
-	WGPUQueue queue;
-	std::pair<WGPUSurfaceTexture, WGPUTextureView> GetNextSurfaceViewData();
+	Queue queue;
 	RenderPipeline pipeline;
 	TextureFormat surfaceFormat = TextureFormat::Undefined;
+	Buffer vertexBuffer;
+	uint32_t vertexCount;
 };
 
 std::pair<WGPUSurfaceTexture, WGPUTextureView> Application::GetNextSurfaceViewData() {
@@ -180,6 +177,46 @@ std::pair<WGPUSurfaceTexture, WGPUTextureView> Application::GetNextSurfaceViewDa
 #endif
 
 	return { surfaceTexture, targetView };
+}
+
+RequiredLimits Application::GetRequiredLimits(Adapter adapter) const {
+	SupportedLimits supportedLimits;
+	adapter.getLimits(&supportedLimits);
+
+	RequiredLimits requiredLimits = Default; // TODO: doesn't appear to be working
+
+	requiredLimits.limits.minUniformBufferOffsetAlignment = supportedLimits.limits.minUniformBufferOffsetAlignment;
+	requiredLimits.limits.minStorageBufferOffsetAlignment = supportedLimits.limits.minStorageBufferOffsetAlignment;
+
+	requiredLimits.limits.maxVertexAttributes = 1; // 2 // position and UV
+	requiredLimits.limits.maxVertexBuffers = 1;
+	int maxVertexStride = 2 * sizeof(float); // 4 * sizeof(float);
+	int maxVertexCount = 6;// 6;
+	requiredLimits.limits.maxBufferSize = maxVertexCount * maxVertexStride;
+	requiredLimits.limits.maxVertexBufferArrayStride = maxVertexStride;
+
+	return requiredLimits;
+}
+
+void Application::InitializeBuffers() {
+	std::vector<float> vertexData = {
+		-0.5, -0.5,
+		+0.5, -0.5,
+		+0.0, +0.5,
+
+		-0.55f, -0.5,
+		-0.05f, +0.5,
+		-0.55f, +0.5
+	};
+	vertexCount = static_cast<uint32_t>(vertexData.size() / 2);
+
+	BufferDescriptor bufferDesc;
+	bufferDesc.size = vertexData.size() * sizeof(float);
+	bufferDesc.usage = BufferUsage::CopyDst | BufferUsage::Vertex;
+	bufferDesc.mappedAtCreation = false;
+	vertexBuffer = device.createBuffer(bufferDesc);
+
+	queue.writeBuffer(vertexBuffer, 0, vertexData.data(), bufferDesc.size);
 }
 
 bool Application::Initialize() {
@@ -263,6 +300,8 @@ bool Application::Initialize() {
 		std::cout << std::endl;
 	};
 
+	RequiredLimits requiredLimits = GetRequiredLimits(adapter);
+	//deviceDesc.requiredLimits = &requiredLimits; // TODO: Default limits don't seem to work currently
 	device = requestDeviceSync(adapter, &deviceDesc);
 
 	std::cout << "Got device: " << device << std::endl;
@@ -288,6 +327,7 @@ bool Application::Initialize() {
 	wgpuAdapterRelease(adapter);
 
 	InitializePipeline();
+	InitializeBuffers();
 
 	return true;
 }
@@ -308,8 +348,21 @@ void Application::InitializePipeline() {
 	// Full screen triangle pipeline rasterization description
 	RenderPipelineDescriptor pipelineDesc;
 
-	pipelineDesc.vertex.bufferCount = 0;
-	pipelineDesc.vertex.buffers = nullptr;
+	VertexBufferLayout vertexBufferLayout;
+
+	VertexAttribute positionAttrib;
+	positionAttrib.shaderLocation = 0;
+	positionAttrib.format = VertexFormat::Float32x2;
+	positionAttrib.offset = 0;
+
+	vertexBufferLayout.attributeCount = 1;
+	vertexBufferLayout.attributes = &positionAttrib;
+
+	vertexBufferLayout.arrayStride = 2 * sizeof(float);
+	vertexBufferLayout.stepMode = VertexStepMode::Vertex;
+
+	pipelineDesc.vertex.bufferCount = 1;
+	pipelineDesc.vertex.buffers = &vertexBufferLayout;
 	pipelineDesc.vertex.module = shaderModule;
 	pipelineDesc.vertex.entryPoint = "vs_main";
 	pipelineDesc.vertex.constantCount = 0;
@@ -354,6 +407,7 @@ void Application::InitializePipeline() {
 }
 
 void Application::Terminate() {
+	vertexBuffer.release();
 	pipeline.release();
 	glfwDestroyWindow(window);
 	glfwTerminate();
@@ -372,7 +426,7 @@ void Application::MainLoop() {
 	WGPUCommandEncoderDescriptor encoderDesc = {};
 	encoderDesc.nextInChain = nullptr;
 	encoderDesc.label = "Default Command Encoder";
-	WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, &encoderDesc);
+	CommandEncoder encoder = device.createCommandEncoder(encoderDesc);
 
 	WGPURenderPassDescriptor renderPassDesc = {};
 	renderPassDesc.nextInChain = nullptr;
@@ -392,12 +446,12 @@ void Application::MainLoop() {
 	renderPassDesc.colorAttachments = &renderPassColorAttachment;
 
 	// Create the render pass
-	// TODO: update from webgpu.h to webgpu.hpp
-	WGPURenderPassEncoder renderPass = wgpuCommandEncoderBeginRenderPass(encoder, &renderPassDesc);
-	wgpuRenderPassEncoderSetPipeline(renderPass, pipeline);
-	wgpuRenderPassEncoderDraw(renderPass, 3, 1, 0, 0);
-	wgpuRenderPassEncoderEnd(renderPass);
-	wgpuRenderPassEncoderRelease(renderPass);
+	RenderPassEncoder renderPass = encoder.beginRenderPass(renderPassDesc);
+	renderPass.setPipeline(pipeline);
+	renderPass.setVertexBuffer(0, vertexBuffer, 0, vertexBuffer.getSize());
+	renderPass.draw(vertexCount, 1, 0, 0);
+	renderPass.end();
+	renderPass.release();
 
 	// Encode and submit render pass
 	WGPUCommandBufferDescriptor cmdBufferDesc = {};
