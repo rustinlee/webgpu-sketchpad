@@ -4,13 +4,37 @@
 #include <array>
 #include <GLFW/glfw3.h>
 #include <glfw3webgpu.h>
-#include <webgpu/webgpu.h>
+//#include <webgpu/webgpu.h>
+#define WEBGPU_CPP_IMPLEMENTATION
+#include <webgpu/webgpu.hpp>
 #ifdef WEBGPU_BACKEND_WGPU
 #include <webgpu/wgpu.h>
 #endif // WEBGPU_BACKEND_WGPU
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
+
+using namespace wgpu;
+
+const char* triangleShaderSource = R"(
+@vertex
+fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) vec4f {
+    var p = vec2f(0.0, 0.0);
+    if (in_vertex_index == 0u) {
+        p = vec2f(-0.5, -0.5);
+    } else if (in_vertex_index == 1u) {
+        p = vec2f(0.5, -0.5);
+    } else {
+        p = vec2f(0.0, 0.5);
+    }
+    return vec4f(p, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4f {
+    return vec4f(0.0, 0.4, 1.0, 1.0);
+}
+)";
 
 WGPUAdapter requestAdapterSync(WGPUInstance instance, WGPURequestAdapterOptions const *options) {
 	struct UserData {
@@ -45,7 +69,7 @@ WGPUAdapter requestAdapterSync(WGPUInstance instance, WGPURequestAdapterOptions 
 	return userData.adapter;
 }
 
-WGPUDevice requestDeviceSync(WGPUAdapter adapter, WGPUDeviceDescriptor const *descriptor) {
+Device requestDeviceSync(Adapter adapter, WGPUDeviceDescriptor const *descriptor) {
 	struct UserData {
 		WGPUDevice device = nullptr;
 		bool requestEnded = false;
@@ -117,6 +141,7 @@ void inspectDevice(WGPUDevice device) {
 class Application {
 public:
 	bool Initialize();
+	void InitializePipeline();
 	void Terminate();
 	void MainLoop();
 	bool IsRunning();
@@ -124,9 +149,11 @@ public:
 private:
 	GLFWwindow *window;
 	WGPUSurface surface;
-	WGPUDevice device;
+	Device device;
 	WGPUQueue queue;
 	std::pair<WGPUSurfaceTexture, WGPUTextureView> GetNextSurfaceViewData();
+	RenderPipeline pipeline;
+	TextureFormat surfaceFormat = TextureFormat::Undefined;
 };
 
 std::pair<WGPUSurfaceTexture, WGPUTextureView> Application::GetNextSurfaceViewData() {
@@ -248,7 +275,7 @@ bool Application::Initialize() {
 	surfaceConfig.nextInChain = nullptr;
 	surfaceConfig.width = 640;
 	surfaceConfig.height = 480;
-	WGPUTextureFormat surfaceFormat = wgpuSurfaceGetPreferredFormat(surface, adapter);
+	surfaceFormat = wgpuSurfaceGetPreferredFormat(surface, adapter);
 	surfaceConfig.format = surfaceFormat;
 	surfaceConfig.viewFormatCount = 0;
 	surfaceConfig.viewFormats = nullptr;
@@ -260,10 +287,74 @@ bool Application::Initialize() {
 
 	wgpuAdapterRelease(adapter);
 
+	InitializePipeline();
+
 	return true;
 }
 
+void Application::InitializePipeline() {
+	ShaderModuleDescriptor shaderDesc;
+#ifdef WEBGPU_BACKEND_WGPU
+	shaderDesc.hintCount = 0;
+	shaderDesc.hints = nullptr;
+#endif
+	ShaderModuleWGSLDescriptor shaderCodeDesc;
+	shaderCodeDesc.chain.next = nullptr;
+	shaderCodeDesc.chain.sType = SType::ShaderModuleWGSLDescriptor;
+	shaderDesc.nextInChain = &shaderCodeDesc.chain;
+	shaderCodeDesc.code = triangleShaderSource;
+	ShaderModule shaderModule = device.createShaderModule(shaderDesc);
+
+	// Full screen triangle pipeline rasterization description
+	RenderPipelineDescriptor pipelineDesc;
+
+	pipelineDesc.vertex.bufferCount = 0;
+	pipelineDesc.vertex.buffers = nullptr;
+	pipelineDesc.vertex.module = shaderModule;
+	pipelineDesc.vertex.entryPoint = "vs_main";
+	pipelineDesc.vertex.constantCount = 0;
+	pipelineDesc.vertex.constants = nullptr;
+
+	pipelineDesc.primitive.topology = PrimitiveTopology::TriangleList;
+	pipelineDesc.primitive.stripIndexFormat = IndexFormat::Undefined;
+	pipelineDesc.primitive.frontFace = FrontFace::CCW;
+	pipelineDesc.primitive.cullMode = CullMode::None; // TODO: cull backfaces once hello triangle is working
+
+	FragmentState fragmentState;
+	fragmentState.module = shaderModule;
+	fragmentState.entryPoint = "fs_main";
+	fragmentState.constantCount = 0;
+	fragmentState.constants = nullptr;
+	pipelineDesc.fragment = &fragmentState;
+
+	pipelineDesc.depthStencil = nullptr;
+	pipelineDesc.layout = nullptr;
+
+	BlendState blendState;
+
+	ColorTargetState colorTarget;
+	colorTarget.format = surfaceFormat;
+	colorTarget.blend = &blendState;
+	colorTarget.writeMask = ColorWriteMask::All;
+
+	fragmentState.targetCount = 1;
+	fragmentState.targets = &colorTarget;
+
+	blendState.color.srcFactor = BlendFactor::SrcAlpha;
+	blendState.color.dstFactor = BlendFactor::OneMinusSrcAlpha;
+	blendState.color.operation = BlendOperation::Add;
+
+	pipelineDesc.multisample.count = 1;
+	pipelineDesc.multisample.mask = ~0u;
+	pipelineDesc.multisample.alphaToCoverageEnabled = false;
+
+	pipeline = device.createRenderPipeline(pipelineDesc);
+
+	shaderModule.release();
+}
+
 void Application::Terminate() {
+	pipeline.release();
 	glfwDestroyWindow(window);
 	glfwTerminate();
 	wgpuSurfaceUnconfigure(surface);
@@ -300,8 +391,11 @@ void Application::MainLoop() {
 	renderPassDesc.colorAttachmentCount = 1;
 	renderPassDesc.colorAttachments = &renderPassColorAttachment;
 
-	// Create the render pass, just a screen clear with no draw commands currently
+	// Create the render pass
+	// TODO: update from webgpu.h to webgpu.hpp
 	WGPURenderPassEncoder renderPass = wgpuCommandEncoderBeginRenderPass(encoder, &renderPassDesc);
+	wgpuRenderPassEncoderSetPipeline(renderPass, pipeline);
+	wgpuRenderPassEncoderDraw(renderPass, 3, 1, 0, 0);
 	wgpuRenderPassEncoderEnd(renderPass);
 	wgpuRenderPassEncoderRelease(renderPass);
 
