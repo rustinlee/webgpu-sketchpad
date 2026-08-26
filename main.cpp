@@ -17,14 +17,27 @@
 using namespace wgpu;
 
 const char* triangleShaderSource = R"(
+struct VertexInput {
+	@location(0) position: vec2f,
+	@location(1) texCoord: vec2f,
+};
+
+struct VertexOutput {
+	@builtin(position) position: vec4f,
+	@location(0) texCoord: vec2f,
+};
+
 @vertex
-fn vs_main(@location(0) in_vertex_position: vec2f) -> @builtin(position) vec4f {
-	return vec4f(in_vertex_position, 0.0, 1.0);
+fn vs_main(in: VertexInput) -> VertexOutput {
+	var out: VertexOutput;
+	out.position = vec4f(in.position, 0.0, 1.0);
+	out.texCoord = in.texCoord;
+	return out;
 }
 
 @fragment
-fn fs_main() -> @location(0) vec4f {
-    return vec4f(0.0, 0.4, 1.0, 1.0);
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    return vec4f(in.texCoord.x, in.texCoord.y, 0.0, 1.0);
 }
 )";
 
@@ -190,8 +203,8 @@ RequiredLimits Application::GetRequiredLimits(Adapter adapter) const {
 
 	requiredLimits.limits.maxVertexAttributes = 1; // 2 // position and UV
 	requiredLimits.limits.maxVertexBuffers = 1;
-	int maxVertexStride = 2 * sizeof(float); // 4 * sizeof(float);
-	int maxVertexCount = 6;// 6;
+	int maxVertexStride = 4 * sizeof(float);
+	int maxVertexCount = 6;
 	requiredLimits.limits.maxBufferSize = maxVertexCount * maxVertexStride;
 	requiredLimits.limits.maxVertexBufferArrayStride = maxVertexStride;
 
@@ -200,15 +213,11 @@ RequiredLimits Application::GetRequiredLimits(Adapter adapter) const {
 
 void Application::InitializeBuffers() {
 	std::vector<float> vertexData = {
-		-0.5, -0.5,
-		+0.5, -0.5,
-		+0.0, +0.5,
-
-		-0.55f, -0.5,
-		-0.05f, +0.5,
-		-0.55f, +0.5
+		-1.0, -1.0, 0.0, 0.0,
+		+3.0, -1.0, 1.0, 0.0,
+		-1.0, +3.0, 1.0, 1.0,
 	};
-	vertexCount = static_cast<uint32_t>(vertexData.size() / 2);
+	vertexCount = static_cast<uint32_t>(vertexData.size() / 4);
 
 	BufferDescriptor bufferDesc;
 	bufferDesc.size = vertexData.size() * sizeof(float);
@@ -350,15 +359,19 @@ void Application::InitializePipeline() {
 
 	VertexBufferLayout vertexBufferLayout;
 
-	VertexAttribute positionAttrib;
-	positionAttrib.shaderLocation = 0;
-	positionAttrib.format = VertexFormat::Float32x2;
-	positionAttrib.offset = 0;
+	// Vertex attributes: float2 position, float2 texCoord
+	std::vector<VertexAttribute> vertexAttribs(2);
+	vertexAttribs[0].shaderLocation = 0;
+	vertexAttribs[0].format = VertexFormat::Float32x2;
+	vertexAttribs[0].offset = 0;
+	vertexAttribs[1].shaderLocation = 1;
+	vertexAttribs[1].format = VertexFormat::Float32x2;
+	vertexAttribs[1].offset = 2 * sizeof(float);
 
-	vertexBufferLayout.attributeCount = 1;
-	vertexBufferLayout.attributes = &positionAttrib;
+	vertexBufferLayout.attributeCount = static_cast<uint32_t>(vertexAttribs.size());
+	vertexBufferLayout.attributes = vertexAttribs.data();
 
-	vertexBufferLayout.arrayStride = 2 * sizeof(float);
+	vertexBufferLayout.arrayStride = 4 * sizeof(float);
 	vertexBufferLayout.stepMode = VertexStepMode::Vertex;
 
 	pipelineDesc.vertex.bufferCount = 1;
