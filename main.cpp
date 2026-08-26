@@ -17,6 +17,8 @@
 using namespace wgpu;
 
 const char* triangleShaderSource = R"(
+@group(0) @binding(0) var<uniform> uTime: f32;
+
 struct VertexInput {
 	@location(0) position: vec2f,
 	@location(1) texCoord: vec2f,
@@ -37,7 +39,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    return vec4f(in.texCoord.x, in.texCoord.y, 0.0, 1.0);
+    return vec4f(in.texCoord.x, in.texCoord.y, 0.5 + sin(uTime) * 0.5, 1.0);
 }
 )";
 
@@ -153,6 +155,7 @@ public:
 private:
 	void InitializePipeline();
 	void InitializeBuffers();
+	void InitializeBindGroups();
 	std::pair<WGPUSurfaceTexture, WGPUTextureView> GetNextSurfaceViewData();
 	RequiredLimits GetRequiredLimits(Adapter adapter) const;
 
@@ -164,6 +167,10 @@ private:
 	TextureFormat surfaceFormat = TextureFormat::Undefined;
 	Buffer vertexBuffer;
 	uint32_t vertexCount;
+	Buffer uniformBuffer;
+	PipelineLayout pipelineLayout;
+	BindGroupLayout bindGroupLayout;
+	BindGroup bindGroup;
 };
 
 std::pair<WGPUSurfaceTexture, WGPUTextureView> Application::GetNextSurfaceViewData() {
@@ -212,6 +219,7 @@ RequiredLimits Application::GetRequiredLimits(Adapter adapter) const {
 }
 
 void Application::InitializeBuffers() {
+	// Vertex buffer
 	std::vector<float> vertexData = {
 		-1.0, -1.0, 0.0, 0.0,
 		+3.0, -1.0, 1.0, 0.0,
@@ -226,6 +234,15 @@ void Application::InitializeBuffers() {
 	vertexBuffer = device.createBuffer(bufferDesc);
 
 	queue.writeBuffer(vertexBuffer, 0, vertexData.data(), bufferDesc.size);
+
+	// Uniform buffer
+	bufferDesc.size = 4 * sizeof(float);
+	bufferDesc.usage = BufferUsage::CopyDst | BufferUsage::Uniform;
+	bufferDesc.mappedAtCreation = false;
+	uniformBuffer = device.createBuffer(bufferDesc);
+
+	float currentTime = 1.0f;
+	queue.writeBuffer(uniformBuffer, 0, &currentTime, sizeof(float));
 }
 
 bool Application::Initialize() {
@@ -337,6 +354,7 @@ bool Application::Initialize() {
 
 	InitializePipeline();
 	InitializeBuffers();
+	InitializeBindGroups();
 
 	return true;
 }
@@ -357,9 +375,8 @@ void Application::InitializePipeline() {
 	// Full screen triangle pipeline rasterization description
 	RenderPipelineDescriptor pipelineDesc;
 
-	VertexBufferLayout vertexBufferLayout;
-
 	// Vertex attributes: float2 position, float2 texCoord
+	VertexBufferLayout vertexBufferLayout;
 	std::vector<VertexAttribute> vertexAttribs(2);
 	vertexAttribs[0].shaderLocation = 0;
 	vertexAttribs[0].format = VertexFormat::Float32x2;
@@ -414,14 +431,49 @@ void Application::InitializePipeline() {
 	pipelineDesc.multisample.mask = ~0u;
 	pipelineDesc.multisample.alphaToCoverageEnabled = false;
 
+	BindGroupLayoutEntry bindingLayout = Default;
+	bindingLayout.binding = 0;
+	bindingLayout.visibility = ShaderStage::Fragment;
+	bindingLayout.buffer.type = BufferBindingType::Uniform;
+	bindingLayout.buffer.minBindingSize = 4 * sizeof(float);
+
+	BindGroupLayoutDescriptor bindGroupLayoutDesc;
+	bindGroupLayoutDesc.entryCount = 1;
+	bindGroupLayoutDesc.entries = &bindingLayout;
+	bindGroupLayout = device.createBindGroupLayout(bindGroupLayoutDesc);
+
+	PipelineLayoutDescriptor pipelineLayoutDesc;
+	pipelineLayoutDesc.bindGroupLayoutCount = 1;
+	pipelineLayoutDesc.bindGroupLayouts = reinterpret_cast<WGPUBindGroupLayout*>(&bindGroupLayout);
+	pipelineLayout = device.createPipelineLayout(pipelineLayoutDesc);
+	pipelineDesc.layout = pipelineLayout;
+
 	pipeline = device.createRenderPipeline(pipelineDesc);
 
 	shaderModule.release();
 }
 
+void Application::InitializeBindGroups() {
+	BindGroupEntry binding;
+	binding.binding = 0;
+	binding.buffer = uniformBuffer;
+	binding.offset = 0;
+	binding.size = 4 * sizeof(float);
+
+	BindGroupDescriptor bindGroupDesc;
+	bindGroupDesc.layout = bindGroupLayout;
+	bindGroupDesc.entryCount = 1;
+	bindGroupDesc.entries = &binding;
+	bindGroup = device.createBindGroup(bindGroupDesc);
+}
+
 void Application::Terminate() {
 	vertexBuffer.release();
+	uniformBuffer.release();
 	pipeline.release();
+	pipelineLayout.release();
+	bindGroupLayout.release();
+	bindGroup.release();
 	glfwDestroyWindow(window);
 	glfwTerminate();
 	wgpuSurfaceUnconfigure(surface);
@@ -432,6 +484,8 @@ void Application::Terminate() {
 
 void Application::MainLoop() {
 	glfwPollEvents();
+	float t = static_cast<float>(glfwGetTime());
+	queue.writeBuffer(uniformBuffer, 0, &t, sizeof(float));
 
 	auto [surfaceTexture, targetView] = GetNextSurfaceViewData();
 	if (!targetView) return;
@@ -460,8 +514,11 @@ void Application::MainLoop() {
 
 	// Create the render pass
 	RenderPassEncoder renderPass = encoder.beginRenderPass(renderPassDesc);
+
 	renderPass.setPipeline(pipeline);
 	renderPass.setVertexBuffer(0, vertexBuffer, 0, vertexBuffer.getSize());
+	renderPass.setBindGroup(0, bindGroup, 0, nullptr);
+
 	renderPass.draw(vertexCount, 1, 0, 0);
 	renderPass.end();
 	renderPass.release();
