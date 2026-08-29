@@ -4,6 +4,8 @@ project(
     LANGUAGES CXX C
 )
 
+option(DEV_MODE "Set up development helper settings" ON)
+
 add_compile_definitions(_GLFW_WAYLAND)
 
 if (NOT EMSCRIPTEN)
@@ -19,7 +21,24 @@ add_subdirectory(glfw3webgpu)
 
 add_executable(webgpu_sketchpad
     main.cpp
+    ResourceManager.cpp
+    ResourceManager.h
 )
+
+if(DEV_MODE)
+    # In dev mode, we load resources from the source tree, so that when we
+    # dynamically edit resources (like shaders), these are correctly
+    # versionned.
+    target_compile_definitions(webgpu_sketchpad PRIVATE
+        RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources"
+    )
+else()
+    # In release mode, we just load resources relatively to wherever the
+    # executable is launched from, so that the binary is portable
+    target_compile_definitions(webgpu_sketchpad PRIVATE
+        RESOURCE_DIR="./resources"
+    )
+endif()
 
 target_link_libraries(webgpu_sketchpad PRIVATE glfw webgpu glfw3webgpu)
 
